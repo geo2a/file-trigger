@@ -10,6 +10,7 @@ import System.Directory
 import System.FilePath
 import Data.Time.Clock
 import Data.List
+import Text.Regex.Posix
 
 isSpecialFile :: FilePath -> Bool
 isSpecialFile "."  = True
@@ -91,7 +92,8 @@ watchModifiedFiles :: [FileInfo] -> MyApp [LogEntry]
 watchModifiedFiles currentFilesInfo = do
   ignoredFiles <- ignore `fmap` ask 
   (AppState prevFilesInfo lastTime) <- get
-  let modifiedFilesInfo = filter (\x -> not $ path x `elem` ignoredFiles) . map snd .
+  let modifiedFilesInfo = filter (`elem` prevFilesInfo) .
+        filter (\x -> not $ path x `elem` ignoredFiles) . map snd .
         filter (uncurry older) $ zip prevFilesInfo currentFilesInfo 
       entries = map (makeLogEntry Modified) modifiedFilesInfo
   return entries
