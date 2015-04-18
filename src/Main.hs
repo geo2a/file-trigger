@@ -123,10 +123,9 @@ loop = do
 --------------------------
 ----Configuration Info----
 --------------------------
-workingDir = "."
-interval = 1000000
-logFileName = "app.log"
-ignoreFiles = [".","..",logFileName]
+
+defaultConfig :: AppConfig
+defaultConfig = AppConfig "." "app.log" 1000000 [".","..","app.log"]
 
 parseCfg :: String -> AppConfig
 parseCfg cfgStr =
@@ -136,17 +135,19 @@ parseCfg cfgStr =
 
 main = do
   args <- getArgs
-  if null args
-  then error "Error: please specify configuration file"
-  else do
-    cfg <- parseCfg `fmap` (readFile $ head args)
-    putStrLn "Directory Keeper v0.0.1"
-    setCurrentDirectory $ baseDir cfg
-    curDir <- getCurrentDirectory
-    putStrLn $ "Running in directory: " ++ curDir
-    startTime <- getCurrentTime
-    putStrLn $ "Start Time: " ++ show startTime
-    putStrLn $ "Using config: " ++ (show cfg)
-    filesInfo <- getFilesInfo workingDir
-    runMyApp loop cfg (AppState filesInfo startTime)
+  cfg  <- if null args
+          then do
+            putStrLn "Running with default config"
+            return defaultConfig 
+          else 
+            parseCfg `fmap` (readFile $ head args)
+  putStrLn "Directory Keeper v0.0.1"
+  setCurrentDirectory $ baseDir cfg
+  curDir <- getCurrentDirectory
+  putStrLn $ "Running in directory: " ++ curDir
+  startTime <- getCurrentTime
+  putStrLn $ "Start Time: " ++ show startTime
+  putStrLn $ "Using config: " ++ (show cfg)
+  filesInfo <- getFilesInfo curDir
+  runMyApp loop cfg (AppState filesInfo startTime)
 
