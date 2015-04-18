@@ -6,6 +6,7 @@ import Control.Applicative
 import Control.Monad
 import Control.Monad.RWS
 import Control.Concurrent
+import System.Environment
 import System.Directory
 import System.FilePath
 import Data.Time.Clock
@@ -127,12 +128,25 @@ interval = 1000000
 logFileName = "app.log"
 ignoreFiles = [".","..",logFileName]
 
+parseCfg :: String -> AppConfig
+parseCfg cfgStr =
+  let [workDir,delay,log] = lines cfgStr
+      ignoreByDefault = [".","..",log]
+  in AppConfig workDir log (read delay) ignoreByDefault
+
 main = do
-  putStrLn "Directory Keeper v0.0.1"
-  putStrLn $ "Running in directory: " ++ workingDir
-  startTime <- getCurrentTime
-  putStrLn $ "Start Time: " ++ show startTime
-  filesInfo <- getFilesInfo workingDir
-  runMyApp loop (AppConfig workingDir logFileName interval ignoreFiles) 
-                (AppState filesInfo startTime)
+  args <- getArgs
+  if null args
+  then error "Error: please specify configuration file"
+  else do
+    cfg <- parseCfg `fmap` (readFile $ head args)
+    putStrLn "Directory Keeper v0.0.1"
+    setCurrentDirectory $ baseDir cfg
+    curDir <- getCurrentDirectory
+    putStrLn $ "Running in directory: " ++ curDir
+    startTime <- getCurrentTime
+    putStrLn $ "Start Time: " ++ show startTime
+    putStrLn $ "Using config: " ++ (show cfg)
+    filesInfo <- getFilesInfo workingDir
+    runMyApp loop cfg (AppState filesInfo startTime)
 
