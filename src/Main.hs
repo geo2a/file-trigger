@@ -1,10 +1,15 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving,
+             DeriveDataTypeable,
+             FlexibleContexts #-}
 
 module Main where
 
 import Control.Applicative
 import Control.Monad
-import Control.Monad.RWS
+import Control.Eff
+import Control.Eff.Lift
+import Control.Eff.Reader.Lazy
+import Control.Eff.State.Lazy
 import Control.Concurrent
 import System.Environment
 import System.Process
@@ -12,6 +17,7 @@ import System.Directory
 import System.FilePath
 import Data.Time.Clock
 import Data.List
+import Data.Typeable
 import Text.Regex.Posix
 
 isSpecialFile :: FilePath -> Bool
@@ -27,20 +33,25 @@ data AppConfig = AppConfig {
       refreshInterval   :: Int,
       ignore            :: [FilePath],
       onCreate          :: ShellScript
-    } deriving (Show)
+    } deriving (Typeable, Show)
 
 data FileInfo = FileInfo {
-  path         :: FilePath,
-  lastModified :: UTCTime
+  path         :: FilePath
+  --lastModified :: UTCTime
 } deriving (Show)
 
 instance Eq FileInfo where
   x == y = path x == path y
 
+data FileSystemEvent = Created 
+                     | Modified
+                     | Deleted
+  deriving (Show, Eq)
+
 data AppState = AppState {
-      filesInfo  :: [FileInfo],
-      checkPoint :: UTCTime
-    } deriving (Show)
+      filesInfo  :: [FileInfo]
+      --checkPoint :: UTCTime
+    } deriving (Typeable, Show)
 
 data LogEntry = LogEntry {
       file  :: FilePath,
@@ -48,117 +59,126 @@ data LogEntry = LogEntry {
       time  :: UTCTime
 } deriving (Show)
 
-newtype MyApp a = MyApp {
-      runA :: RWST AppConfig [LogEntry] AppState IO a
-    } deriving (Functor, Applicative, 
-                Monad, MonadIO, 
-                MonadReader AppConfig,
-                MonadWriter [LogEntry], 
-                MonadState AppState)
+f :: (Member (Reader AppConfig) r, 
+      Member (State AppState) r
+      , SetMember Lift (Lift IO) r
+        ) => Eff r ()
+f = do
+  put $ AppState [(FileInfo "." )]
+  lift $ putStrLn "hi bro"
 
-data FileSystemEvent = Created 
-                     | Modified
-                     | Deleted
-  deriving (Show, Eq)
+--r = run f
+r = runLift $ runState (AppState []) (runReader f (AppConfig "" "" 0 [] ""))
+--r = run . runReader (AppConfig "" "" 0 [] "") . runState (AppState [] 0) . runLift $ f
 
-runMyApp :: MyApp a -> AppConfig -> AppState -> IO (a, AppState, [LogEntry])
-runMyApp k config initState =
-  runRWST (runA k) config initState
+--newtype MyApp a = MyApp {
+--      runA :: RWST AppConfig [LogEntry] AppState IO a
+--    } deriving (Functor, Applicative, 
+--                Monad, MonadIO, 
+--                MonadReader AppConfig,
+--                MonadWriter [LogEntry], 
+--                MonadState AppState)
 
-insertLogEntry :: LogEntry -> MyApp ()
-insertLogEntry entry = do
-  log <- logFile `fmap` ask
-  liftIO $ appendFile log (show entry ++ "\n")
 
-makeLogEntry :: FileSystemEvent -> FileInfo -> LogEntry 
-makeLogEntry event (FileInfo file time) = LogEntry file event time 
 
-watchCreatedFiles :: [FileInfo] -> MyApp [LogEntry]
-watchCreatedFiles currentFilesInfo = do
-  ignoredFiles <- ignore `fmap` ask 
-  script <- onCreate `fmap` ask
-  (AppState prevFilesInfo lastTime) <- get
-  let createdFilesInfo = 
-        filter (\x -> not $ path x `elem` ignoredFiles) $ 
-          currentFilesInfo \\ prevFilesInfo 
-      entries = map (makeLogEntry Created) createdFilesInfo
-  when (not . null $ entries) 
-    (liftIO $ system script >> return ())
-  return entries
+--runMyApp :: MyApp a -> AppConfig -> AppState -> IO (a, AppState, [LogEntry])
+--runMyApp k config initState =
+--  runRWST (runA k) config initState
 
-watchDeletedFiles :: [FileInfo] -> MyApp [LogEntry]
-watchDeletedFiles currentFilesInfo = do
-  ignoredFiles <- ignore `fmap` ask 
-  (AppState prevFilesInfo lastTime) <- get
-  let deletedFilesInfo = 
-        filter (\x -> not $ path x `elem` ignoredFiles) $ 
-          prevFilesInfo \\ currentFilesInfo 
-      entries = map (makeLogEntry Deleted) deletedFilesInfo
-  return entries
+--insertLogEntry :: LogEntry -> MyApp ()
+--insertLogEntry entry = do
+--  log <- logFile `fmap` ask
+--  liftIO $ appendFile log (show entry ++ "\n")
 
-watchModifiedFiles :: [FileInfo] -> MyApp [LogEntry]
-watchModifiedFiles currentFilesInfo = do
-  ignoredFiles <- ignore `fmap` ask 
-  (AppState prevFilesInfo lastTime) <- get
-  let modifiedFilesInfo = filter (`elem` prevFilesInfo) .
-        filter (\x -> not $ path x `elem` ignoredFiles) . map snd .
-        filter (uncurry older) $ zip prevFilesInfo currentFilesInfo 
-      entries = map (makeLogEntry Modified) modifiedFilesInfo
-  return entries
-  where older x y = lastModified y > lastModified x
+--makeLogEntry :: FileSystemEvent -> FileInfo -> LogEntry 
+--makeLogEntry event (FileInfo file time) = LogEntry file event time 
 
-getFilesInfo :: FilePath -> IO [FileInfo]
-getFilesInfo dir = do
-  ls <- liftIO $ getDirectoryContents dir
-  modifTimes <- liftIO $ mapM getModificationTime ls 
-  return $ map (uncurry FileInfo) (zip ls modifTimes)
+--watchCreatedFiles :: [FileInfo] -> MyApp [LogEntry]
+--watchCreatedFiles currentFilesInfo = do
+--  ignoredFiles <- ignore `fmap` ask 
+--  script <- onCreate `fmap` ask
+--  (AppState prevFilesInfo lastTime) <- get
+--  let createdFilesInfo = 
+--        filter (\x -> not $ path x `elem` ignoredFiles) $ 
+--          currentFilesInfo \\ prevFilesInfo 
+--      entries = map (makeLogEntry Created) createdFilesInfo
+--  when (not . null $ entries) 
+--    (liftIO $ system script >> return ())
+--  return entries
 
-loop :: MyApp ()
-loop = do
-  (AppConfig dir log refreshInterval _ _) <- ask
-  (AppState  prevFilesList lastTime) <- get  
-  currentFilesList <- liftIO $ getFilesInfo dir
-  created  <- (watchCreatedFiles currentFilesList)
-  deleted  <- (watchDeletedFiles currentFilesList)
-  modified <- (watchModifiedFiles currentFilesList)
-  mapM insertLogEntry (created ++ deleted ++ modified)
-  liftIO $ threadDelay refreshInterval
-  curTime <- liftIO getCurrentTime
-  put $ (AppState currentFilesList curTime)
-  loop
+--watchDeletedFiles :: [FileInfo] -> MyApp [LogEntry]
+--watchDeletedFiles currentFilesInfo = do
+--  ignoredFiles <- ignore `fmap` ask 
+--  (AppState prevFilesInfo lastTime) <- get
+--  let deletedFilesInfo = 
+--        filter (\x -> not $ path x `elem` ignoredFiles) $ 
+--          prevFilesInfo \\ currentFilesInfo 
+--      entries = map (makeLogEntry Deleted) deletedFilesInfo
+--  return entries
 
---------------------------
-----Configuration Info----
---------------------------
+--watchModifiedFiles :: [FileInfo] -> MyApp [LogEntry]
+--watchModifiedFiles currentFilesInfo = do
+--  ignoredFiles <- ignore `fmap` ask 
+--  (AppState prevFilesInfo lastTime) <- get
+--  let modifiedFilesInfo = filter (`elem` prevFilesInfo) .
+--        filter (\x -> not $ path x `elem` ignoredFiles) . map snd .
+--        filter (uncurry older) $ zip prevFilesInfo currentFilesInfo 
+--      entries = map (makeLogEntry Modified) modifiedFilesInfo
+--  return entries
+--  where older x y = lastModified y > lastModified x
 
-defaultConfig :: AppConfig
-defaultConfig = AppConfig "." "app.log" 1000000 
-                          [".","..","app.log"] onCreateScript
+--getFilesInfo :: FilePath -> IO [FileInfo]
+--getFilesInfo dir = do
+--  ls <- liftIO $ getDirectoryContents dir
+--  modifTimes <- liftIO $ mapM getModificationTime ls 
+--  return $ map (uncurry FileInfo) (zip ls modifTimes)
 
-parseCfg :: String -> AppConfig
-parseCfg cfgStr =
-  let [workDir,delay,log, scriptOnCreate] = lines cfgStr
-      ignoreByDefault = [".","..",log]
-  in AppConfig workDir log (read delay) ignoreByDefault scriptOnCreate
+--loop :: MyApp ()
+--loop = do
+--  (AppConfig dir log refreshInterval _ _) <- ask
+--  (AppState  prevFilesList lastTime) <- get  
+--  currentFilesList <- liftIO $ getFilesInfo dir
+--  created  <- (watchCreatedFiles currentFilesList)
+--  deleted  <- (watchDeletedFiles currentFilesList)
+--  modified <- (watchModifiedFiles currentFilesList)
+--  mapM insertLogEntry (created ++ deleted ++ modified)
+--  liftIO $ threadDelay refreshInterval
+--  curTime <- liftIO getCurrentTime
+--  put $ (AppState currentFilesList curTime)
+--  loop
 
-onCreateScript :: String
-onCreateScript = "echo \"hello\""
+----------------------------
+------Configuration Info----
+----------------------------
 
-main = do
-  args <- getArgs
-  cfg  <- if null args
-          then do
-            putStrLn "Running with default config"
-            return defaultConfig 
-          else 
-            parseCfg `fmap` (readFile $ head args)
-  putStrLn "Directory Keeper v0.0.1"
-  setCurrentDirectory $ baseDir cfg
-  curDir <- getCurrentDirectory
-  putStrLn $ "Running in directory: " ++ curDir
-  startTime <- getCurrentTime
-  putStrLn $ "Start Time: " ++ show startTime
-  putStrLn $ "Using config: " ++ (show cfg)
-  filesInfo <- getFilesInfo curDir
-  runMyApp loop cfg (AppState filesInfo startTime)
+--defaultConfig :: AppConfig
+--defaultConfig = AppConfig "." "app.log" 1000000 
+--                          [".","..","app.log"] onCreateScript
+
+--parseCfg :: String -> AppConfig
+--parseCfg cfgStr =
+--  let [workDir,delay,log, scriptOnCreate] = lines cfgStr
+--      ignoreByDefault = [".","..",log]
+--  in AppConfig workDir log (read delay) ignoreByDefault scriptOnCreate
+
+--onCreateScript :: String
+--onCreateScript = "echo \"hello\""
+
+--main = do
+--  args <- getArgs
+--  cfg  <- if null args
+--          then do
+--            putStrLn "Running with default config"
+--            return defaultConfig 
+--          else 
+--            parseCfg `fmap` (readFile $ head args)
+--  putStrLn "Directory Keeper v0.0.1"
+--  setCurrentDirectory $ baseDir cfg
+--  curDir <- getCurrentDirectory
+--  putStrLn $ "Running in directory: " ++ curDir
+--  startTime <- getCurrentTime
+--  putStrLn $ "Start Time: " ++ show startTime
+--  putStrLn $ "Using config: " ++ (show cfg)
+--  filesInfo <- getFilesInfo curDir
+--  runMyApp loop cfg (AppState filesInfo startTime)
 

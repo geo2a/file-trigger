@@ -22,7 +22,7 @@ executable dir-keeper
   build-depends:       base >=4.7
                        , directory
                        , filepath
-                       , mtl
+                       , extensible-effects
                        , time
                        , regex-posix
                        , process
