@@ -7,6 +7,7 @@ import Control.Monad
 import Control.Monad.RWS
 import Control.Concurrent
 import System.Environment
+import System.Process
 import System.Directory
 import System.FilePath
 import Data.Time.Clock
@@ -18,11 +19,14 @@ isSpecialFile "."  = True
 isSpecialFile ".." = True
 isSpecialFile _    = False
 
+type ShellScript = String
+
 data AppConfig = AppConfig {
       baseDir           :: FilePath,
       logFile           :: FilePath,
       refreshInterval   :: Int,
-      ignore            :: [FilePath]
+      ignore            :: [FilePath],
+      onCreate          :: ShellScript
     } deriving (Show)
 
 data FileInfo = FileInfo {
@@ -72,11 +76,14 @@ makeLogEntry event (FileInfo file time) = LogEntry file event time
 watchCreatedFiles :: [FileInfo] -> MyApp [LogEntry]
 watchCreatedFiles currentFilesInfo = do
   ignoredFiles <- ignore `fmap` ask 
+  script <- onCreate `fmap` ask
   (AppState prevFilesInfo lastTime) <- get
   let createdFilesInfo = 
         filter (\x -> not $ path x `elem` ignoredFiles) $ 
           currentFilesInfo \\ prevFilesInfo 
       entries = map (makeLogEntry Created) createdFilesInfo
+  when (not . null $ entries) 
+    (liftIO $ system script >> return ())
   return entries
 
 watchDeletedFiles :: [FileInfo] -> MyApp [LogEntry]
@@ -88,7 +95,7 @@ watchDeletedFiles currentFilesInfo = do
           prevFilesInfo \\ currentFilesInfo 
       entries = map (makeLogEntry Deleted) deletedFilesInfo
   return entries
-          
+
 watchModifiedFiles :: [FileInfo] -> MyApp [LogEntry]
 watchModifiedFiles currentFilesInfo = do
   ignoredFiles <- ignore `fmap` ask 
@@ -98,7 +105,7 @@ watchModifiedFiles currentFilesInfo = do
         filter (uncurry older) $ zip prevFilesInfo currentFilesInfo 
       entries = map (makeLogEntry Modified) modifiedFilesInfo
   return entries
-  where older x y     = lastModified y > lastModified x
+  where older x y = lastModified y > lastModified x
 
 getFilesInfo :: FilePath -> IO [FileInfo]
 getFilesInfo dir = do
@@ -108,7 +115,7 @@ getFilesInfo dir = do
 
 loop :: MyApp ()
 loop = do
-  (AppConfig dir log refreshInterval _) <- ask
+  (AppConfig dir log refreshInterval _ _) <- ask
   (AppState  prevFilesList lastTime) <- get  
   currentFilesList <- liftIO $ getFilesInfo dir
   created  <- (watchCreatedFiles currentFilesList)
@@ -125,13 +132,17 @@ loop = do
 --------------------------
 
 defaultConfig :: AppConfig
-defaultConfig = AppConfig "." "app.log" 1000000 [".","..","app.log"]
+defaultConfig = AppConfig "." "app.log" 1000000 
+                          [".","..","app.log"] onCreateScript
 
 parseCfg :: String -> AppConfig
 parseCfg cfgStr =
-  let [workDir,delay,log] = lines cfgStr
+  let [workDir,delay,log, scriptOnCreate] = lines cfgStr
       ignoreByDefault = [".","..",log]
-  in AppConfig workDir log (read delay) ignoreByDefault
+  in AppConfig workDir log (read delay) ignoreByDefault scriptOnCreate
+
+onCreateScript :: String
+onCreateScript = "echo \"hello\""
 
 main = do
   args <- getArgs
