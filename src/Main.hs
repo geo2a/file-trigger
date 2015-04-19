@@ -1,7 +1,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving,
              DeriveDataTypeable,
              FlexibleContexts,
-             OverlappingInstances#-}
+             OverloadedStrings #-}
 
 module Main where
 
@@ -19,21 +19,27 @@ import System.FilePath
 import Data.Time.Clock
 import Data.List
 import Data.Typeable
-import Text.Regex.Posix
+import Data.Yaml
+
 
 isSpecialFile :: FilePath -> Bool
 isSpecialFile "."  = True
 isSpecialFile ".." = True
 isSpecialFile _    = False
 
+----------------------
+---- Domain Types ----
+----------------------
+
 type ShellScript = String
 
+type RefreshInterval = Int
+
 data AppConfig = AppConfig {
-      baseDir           :: FilePath,
-      logFile           :: FilePath,
-      refreshInterval   :: Int,
-      ignore            :: [FilePath],
-      onCreate          :: ShellScript
+      directory         :: FilePath,
+      logFileName       :: FilePath,
+      refreshRate       :: RefreshInterval,
+      onCreateScript    :: ShellScript
     } deriving (Typeable, Show)
 
 data FileInfo = FileInfo {
@@ -60,129 +66,108 @@ data LogEntry = LogEntry {
       time  :: UTCTime
 } deriving (Show)
 
-f :: (Member (Reader AppConfig) r, 
-      Member (State AppState)   r, 
-      SetMember Lift (Lift IO)  r) => Eff r ()
-f = do
-  cfg   <- ask
-  state <- get
-  lift $ putStrLn "Hi, bro!"
-  lift $ putStrLn $ "Running with configuration: " ++ 
-    show (cfg :: AppConfig)
-  lift $ putStrLn $ "Initial state: " ++ 
-    show (state :: AppState)
+--------------------------
+---- Helper Functions ----
+--------------------------
 
-runApp action cfg initState = 
-  runLift $ runState initState (runReader action cfg)
-
-loop ::(Member (Reader AppConfig) r, 
-        Member (State AppState)   r, 
-        SetMember Lift (Lift IO)  r) => Eff r ()
-loop = do
-  (AppConfig dir log refreshInterval _ _) <- ask
-  (AppState  prevFilesList lastTime) <- get  
-  currentFilesList <- lift $ getFilesInfo dir
-  --created  <- (watchCreatedFiles currentFilesList)
-  --deleted  <- (watchDeletedFiles currentFilesList)
-  --modified <- (watchModifiedFiles currentFilesList)
-  --mapM insertLogEntry (created ++ deleted ++ modified)
-  lift $ threadDelay refreshInterval
-  curTime <- lift getCurrentTime
-  put $ (AppState currentFilesList curTime)
-  loop
-
+-- | Sort of zipping file paths with last 
+-- | modification times
 getFilesInfo :: FilePath -> IO [FileInfo]
 getFilesInfo dir = do
   ls <- getDirectoryContents dir
   modifTimes <- mapM getModificationTime ls 
   return $ map (uncurry FileInfo) (zip ls modifTimes)
 
-main = do
-  startTime <- getCurrentTime
-  runApp f defaultCfg (AppState [] startTime)
-
-defaultCfg :: AppConfig
-defaultCfg = 
-  AppConfig "." "app.log" 1000000 [".","..","app.log"] ""
-
-insertLogEntry :: 
-      (Member (Reader AppConfig) r, 
-       Member (State AppState)   r, 
-       SetMember Lift (Lift IO)  r) => 
-         LogEntry -> Eff r ()
+-- | Inserting entry in app external log, IO 
+insertLogEntry :: (Member (Reader AppConfig) r, 
+                   Member (State AppState)   r, 
+                   SetMember Lift (Lift IO)  r) => 
+                     LogEntry -> Eff r ()
 insertLogEntry entry = do
-  log <- logFile `fmap` ask
+  log <- logFileName `fmap` ask
   lift $ appendFile log (show entry ++ "\n")
 
 makeLogEntry :: FileSystemEvent -> FileInfo -> LogEntry 
 makeLogEntry event (FileInfo file time) = LogEntry file event time 
 
+--------------------------------
+---- Parsing Configurations ----
+--------------------------------
+
+instance FromJSON AppConfig where
+    parseJSON (Object m) = AppConfig <$>
+        m .: "directory"   <*>
+        m .: "logFileName" <*>
+        m .: "refreshRate" <*>
+        m .: "onCreateScript"
+    parseJSON x = fail ("not an object: " ++ show x)
+
+readConfig :: FilePath ->  IO AppConfig
+readConfig fname =
+    either (error . show) id <$>
+    decodeFileEither fname  
+
+------------------------
+---- Business Logic ----
+------------------------
+
+-- | Main loop
+loop :: (Member (Reader AppConfig) r, 
+         Member (State AppState)   r, 
+         SetMember Lift (Lift IO)  r) => Eff r ()
+loop = do
+  (AppConfig dir log refreshInterval _) <- ask
+  (AppState  prevFilesList lastTime) <- get  
+  currentFilesList <- lift $ getFilesInfo dir
+  handleCreate currentFilesList
+  lift $ threadDelay refreshInterval
+  curTime <- lift getCurrentTime
+  put $ (AppState currentFilesList curTime)
+  loop
+
+-----------------------------
+---- Loop Event handlers ----
+-----------------------------
+invokeScript :: ShellScript -> FileInfo -> IO ()
+invokeScript script fileInfo =
+  system (script ++ ' ':(path fileInfo)) >> return ()
+
+handleCreate :: (Member (Reader AppConfig) r, 
+                 Member (State AppState)   r, 
+                 SetMember Lift (Lift IO)  r) => 
+  [FileInfo] -> Eff r ()
+handleCreate currentFilesInfo = do
+  cfg <- ask
+  (AppState prevFilesInfo lastTime) <- get
+  let createdFilesInfo = 
+          currentFilesInfo \\ prevFilesInfo
+  lift $ mapM_ (invokeScript (onCreateScript cfg)) createdFilesInfo 
+
+
 --watchCreatedFiles :: [FileInfo] -> MyApp [LogEntry]
 --watchCreatedFiles currentFilesInfo = do
 --  ignoredFiles <- ignore `fmap` ask 
---  script <- onCreate `fmap` ask
 --  (AppState prevFilesInfo lastTime) <- get
 --  let createdFilesInfo = 
 --        filter (\x -> not $ path x `elem` ignoredFiles) $ 
 --          currentFilesInfo \\ prevFilesInfo 
 --      entries = map (makeLogEntry Created) createdFilesInfo
---  when (not . null $ entries) 
---    (liftIO $ system script >> return ())
 --  return entries
 
---watchDeletedFiles :: [FileInfo] -> MyApp [LogEntry]
---watchDeletedFiles currentFilesInfo = do
---  ignoredFiles <- ignore `fmap` ask 
---  (AppState prevFilesInfo lastTime) <- get
---  let deletedFilesInfo = 
---        filter (\x -> not $ path x `elem` ignoredFiles) $ 
---          prevFilesInfo \\ currentFilesInfo 
---      entries = map (makeLogEntry Deleted) deletedFilesInfo
---  return entries
+-- | Handles all effects produced
+-- | by application. 
+runApp action cfg initState = 
+  runLift . runState initState . runReader action $ cfg
 
---watchModifiedFiles :: [FileInfo] -> MyApp [LogEntry]
---watchModifiedFiles currentFilesInfo = do
---  ignoredFiles <- ignore `fmap` ask 
---  (AppState prevFilesInfo lastTime) <- get
---  let modifiedFilesInfo = filter (`elem` prevFilesInfo) .
---        filter (\x -> not $ path x `elem` ignoredFiles) . map snd .
---        filter (uncurry older) $ zip prevFilesInfo currentFilesInfo 
---      entries = map (makeLogEntry Modified) modifiedFilesInfo
---  return entries
---  where older x y = lastModified y > lastModified x
-
-----------------------------
-------Configuration Info----
-----------------------------
-
---defaultConfig :: AppConfig
---defaultConfig = AppConfig "." "app.log" 1000000 
---                          [".","..","app.log"] onCreateScript
-
---parseCfg :: String -> AppConfig
---parseCfg cfgStr =
---  let [workDir,delay,log, scriptOnCreate] = lines cfgStr
---      ignoreByDefault = [".","..",log]
---  in AppConfig workDir log (read delay) ignoreByDefault scriptOnCreate
-
---onCreateScript :: String
---onCreateScript = "echo \"hello\""
-
---main = do
---  args <- getArgs
---  cfg  <- if null args
---          then do
---            putStrLn "Running with default config"
---            return defaultConfig 
---          else 
---            parseCfg `fmap` (readFile $ head args)
---  putStrLn "Directory Keeper v0.0.1"
---  setCurrentDirectory $ baseDir cfg
---  curDir <- getCurrentDirectory
---  putStrLn $ "Running in directory: " ++ curDir
---  startTime <- getCurrentTime
---  putStrLn $ "Start Time: " ++ show startTime
---  putStrLn $ "Using config: " ++ (show cfg)
---  filesInfo <- getFilesInfo curDir
---  runMyApp loop cfg (AppState filesInfo startTime)
-
+main = do
+  greetings
+  cfg <- readConfig =<< head `fmap` getArgs
+  setCurrentDirectory $ directory cfg 
+  startTime <- getCurrentTime
+  startDirectoryContents <- getDirectoryContents $ directory cfg
+  let startFilesInfo = map (uncurry FileInfo) $ 
+        zip startDirectoryContents (repeat startTime)
+  runApp loop cfg (AppState startFilesInfo startTime)
+    where
+      greetings =
+        putStrLn "File Trigger, v0.1"
