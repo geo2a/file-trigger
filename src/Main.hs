@@ -31,15 +31,15 @@ isSpecialFile _    = False
 ---- Domain Types ----
 ----------------------
 
-type ShellScript = String
-
 type RefreshInterval = Int
 
 data AppConfig = AppConfig {
       directory         :: FilePath,
       logFileName       :: FilePath,
       refreshRate       :: RefreshInterval,
-      onCreateScript    :: ShellScript
+      onCreateScript    :: FilePath,
+      onRemoveScript    :: FilePath,
+      onModifyScript    :: FilePath
     } deriving (Typeable, Show)
 
 data FileInfo = FileInfo {
@@ -96,10 +96,12 @@ makeLogEntry event (FileInfo file time) = LogEntry file event time
 
 instance FromJSON AppConfig where
     parseJSON (Object m) = AppConfig <$>
-        m .: "directory"   <*>
-        m .: "logFileName" <*>
-        m .: "refreshRate" <*>
-        m .: "onCreateScript"
+        m .: "directory"      <*>
+        m .: "logFileName"    <*>
+        m .: "refreshRate"    <*>
+        m .: "onCreateScript" <*>
+        m .: "onRemoveScript" <*>
+        m .: "onModifyScript"
     parseJSON x = fail ("not an object: " ++ show x)
 
 readConfig :: FilePath ->  IO AppConfig
@@ -116,11 +118,13 @@ loop :: (Member (Reader AppConfig) r,
          Member (State AppState)   r, 
          SetMember Lift (Lift IO)  r) => Eff r ()
 loop = do
-  (AppConfig dir log refreshInterval _) <- ask
+  cfg <- ask
   (AppState  prevFilesList lastTime) <- get  
-  currentFilesList <- lift $ getFilesInfo dir
+  currentFilesList <- lift $ getFilesInfo $ directory cfg 
   handleCreate currentFilesList
-  lift $ threadDelay refreshInterval
+  handleRemove currentFilesList
+  handleModify currentFilesList
+  lift $ threadDelay $ refreshRate cfg
   curTime <- lift getCurrentTime
   put $ (AppState currentFilesList curTime)
   loop
@@ -128,9 +132,10 @@ loop = do
 -----------------------------
 ---- Loop Event handlers ----
 -----------------------------
-invokeScript :: ShellScript -> FileInfo -> IO ()
-invokeScript script fileInfo =
-  system (script ++ ' ':(path fileInfo)) >> return ()
+-- |Helper function for script invokation
+invokeScript :: FilePath -> FileInfo -> IO ()
+invokeScript script fileInfo = do
+  callProcess script [path fileInfo]
 
 handleCreate :: (Member (Reader AppConfig) r, 
                  Member (State AppState)   r, 
@@ -143,16 +148,30 @@ handleCreate currentFilesInfo = do
           currentFilesInfo \\ prevFilesInfo
   lift $ mapM_ (invokeScript (onCreateScript cfg)) createdFilesInfo 
 
+handleRemove :: (Member (Reader AppConfig) r, 
+                 Member (State AppState)   r, 
+                 SetMember Lift (Lift IO)  r) => 
+  [FileInfo] -> Eff r ()
+handleRemove currentFilesInfo = do
+  cfg <- ask
+  (AppState prevFilesInfo lastTime) <- get
+  let removedFilesInfo = 
+          prevFilesInfo \\ currentFilesInfo 
+  lift $ mapM_ (invokeScript (onRemoveScript cfg)) removedFilesInfo
 
---watchCreatedFiles :: [FileInfo] -> MyApp [LogEntry]
---watchCreatedFiles currentFilesInfo = do
---  ignoredFiles <- ignore `fmap` ask 
---  (AppState prevFilesInfo lastTime) <- get
---  let createdFilesInfo = 
---        filter (\x -> not $ path x `elem` ignoredFiles) $ 
---          currentFilesInfo \\ prevFilesInfo 
---      entries = map (makeLogEntry Created) createdFilesInfo
---  return entries
+handleModify :: (Member (Reader AppConfig) r, 
+                 Member (State AppState)   r, 
+                 SetMember Lift (Lift IO)  r) => 
+  [FileInfo] -> Eff r ()
+handleModify currentFilesInfo = do
+  cfg <- ask
+  (AppState prevFilesInfo lastTime) <- get
+  let modifiedFilesInfo = filter (`elem` prevFilesInfo) .
+        map snd .
+        filter (uncurry older) $ zip prevFilesInfo currentFilesInfo 
+      entries = map (makeLogEntry Modified) modifiedFilesInfo
+  lift $ mapM_ (invokeScript (onModifyScript cfg)) modifiedFilesInfo
+  where older x y = lastModified y > lastModified x
 
 -- | Handles all effects produced
 -- | by application. 

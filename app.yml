@@ -1,4 +1,0 @@
-directory: /home/geo2a/Workspace/mmcs/4_year_2_sem/corp-app/dir-keeper
-logFileName: ./log/app.log
-refreshRate: 1000000
-onCreateScript: echo "hello"
