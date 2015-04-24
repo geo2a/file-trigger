@@ -39,7 +39,8 @@ data AppConfig = AppConfig {
       refreshRate       :: RefreshInterval,
       onCreateScript    :: FilePath,
       onRemoveScript    :: FilePath,
-      onModifyScript    :: FilePath
+      onModifyScript    :: FilePath,
+      ignore            :: [FilePath]
     } deriving (Typeable, Show)
 
 data FileInfo = FileInfo {
@@ -101,7 +102,8 @@ instance FromJSON AppConfig where
         m .: "refreshRate"    <*>
         m .: "onCreateScript" <*>
         m .: "onRemoveScript" <*>
-        m .: "onModifyScript"
+        m .: "onModifyScript" <*>
+        m .: "ignore"
     parseJSON x = fail ("not an object: " ++ show x)
 
 readConfig :: FilePath ->  IO AppConfig
@@ -167,7 +169,7 @@ handleModify currentFilesInfo = do
   cfg <- ask
   (AppState prevFilesInfo lastTime) <- get
   let modifiedFilesInfo = filter (`elem` prevFilesInfo) .
-        map snd .
+        filter (\x -> not $ path x `elem` (ignore cfg)) . map snd .
         filter (uncurry older) $ zip prevFilesInfo currentFilesInfo 
       entries = map (makeLogEntry Modified) modifiedFilesInfo
   lift $ mapM_ (invokeScript (onModifyScript cfg)) modifiedFilesInfo
