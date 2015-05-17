@@ -15,16 +15,13 @@ build-type:          Simple
 -- extra-source-files:  
 cabal-version:       >=1.10
 
-executable dir-keeper
+executable ft
   main-is:            src/Main.hs             
-  -- other-modules:       
-  -- other-extensions:    
   build-depends:       base >=4.7
                        , directory
                        , filepath
                        , extensible-effects
                        , time
-                       , regex-posix
                        , process
                        , yaml
   -- hs-source-dirs:      

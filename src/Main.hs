@@ -21,12 +21,6 @@ import Data.List
 import Data.Typeable
 import Data.Yaml
 
-
-isSpecialFile :: FilePath -> Bool
-isSpecialFile "."  = True
-isSpecialFile ".." = True
-isSpecialFile _    = False
-
 ----------------------
 ---- Domain Types ----
 ----------------------
@@ -34,13 +28,13 @@ isSpecialFile _    = False
 type RefreshInterval = Int
 
 data AppConfig = AppConfig {
-      directory         :: FilePath,
-      logFileName       :: FilePath,
-      refreshRate       :: RefreshInterval,
-      onCreateScript    :: FilePath,
-      onRemoveScript    :: FilePath,
-      onModifyScript    :: FilePath,
-      ignore            :: [FilePath]
+      directory         :: FilePath
+    , logFileName       :: FilePath
+    , refreshRate       :: RefreshInterval
+    , onCreateScript    :: FilePath
+    , onRemoveScript    :: FilePath
+    , onModifyScript    :: FilePath
+    , ignore            :: [FilePath] --list of ignored files
     } deriving (Typeable, Show)
 
 data FileInfo = FileInfo {
@@ -57,8 +51,8 @@ data FileSystemEvent = Created
   deriving (Show, Eq)
 
 data AppState = AppState {
-      filesInfo  :: [FileInfo],
-      checkPoint :: UTCTime
+      filesInfo  :: [FileInfo]
+    , checkPoint :: UTCTime
     } deriving (Typeable, Show)
 
 data LogEntry = LogEntry {
@@ -182,13 +176,19 @@ runApp action cfg initState =
 
 main = do
   greetings
-  cfg <- readConfig =<< head `fmap` getArgs
-  setCurrentDirectory $ directory cfg 
-  startTime <- getCurrentTime
-  startDirectoryContents <- getDirectoryContents $ directory cfg
-  let startFilesInfo = map (uncurry FileInfo) $ 
-        zip startDirectoryContents (repeat startTime)
-  runApp loop cfg (AppState startFilesInfo startTime)
-    where
-      greetings =
-        putStrLn "File Trigger, v0.1"
+  args <- getArgs
+  if null args
+  then do
+    error "Error: please specify config file name"
+  else do
+    cfg <- readConfig . head $ args
+     
+    setCurrentDirectory $ directory cfg 
+    startTime <- getCurrentTime
+    startDirectoryContents <- getDirectoryContents $ directory cfg
+    let startFilesInfo = map (uncurry FileInfo) $ 
+          zip startDirectoryContents (repeat startTime)
+    runApp loop cfg (AppState startFilesInfo startTime)
+      where
+        greetings =
+          putStrLn "File Trigger, v0.1"
