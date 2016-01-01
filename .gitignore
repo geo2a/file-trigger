@@ -14,3 +14,9 @@ cabal.sandbox.config
 *.aux
 *.hp
 .stack-work/
+
+# user files
+cfg.yaml
+onCreate.sh
+onModify.sh
+onDelete.sh

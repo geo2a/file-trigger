@@ -23,6 +23,7 @@ executable ft
                        , extensible-effects
                        , time
                        , process
+                       , aeson
                        , yaml
   -- hs-source-dirs:      
   default-language:    Haskell2010

@@ -1,5 +1,6 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving,
              DeriveDataTypeable,
+             DeriveGeneric,
              FlexibleContexts,
              OverloadedStrings #-}
 
@@ -12,6 +13,7 @@ import Control.Eff.Lift
 import Control.Eff.Reader.Lazy
 import Control.Eff.State.Lazy
 import Control.Concurrent
+import qualified GHC.Generics as GHC 
 import System.Environment
 import System.Process
 import System.Directory
@@ -19,6 +21,7 @@ import System.FilePath
 import Data.Time.Clock
 import Data.List
 import Data.Typeable
+import Data.Aeson
 import Data.Yaml
 
 ----------------------
@@ -27,20 +30,24 @@ import Data.Yaml
 
 type RefreshInterval = Int
 
-data AppConfig = AppConfig {
-      directory         :: FilePath
-    , logFileName       :: FilePath
-    , refreshRate       :: RefreshInterval
-    , onCreateScript    :: FilePath
-    , onRemoveScript    :: FilePath
-    , onModifyScript    :: FilePath
-    , ignore            :: [FilePath] --list of ignored files
-    } deriving (Typeable, Show)
+data AppConfig = AppConfig 
+  { directory         :: FilePath -- ^ path directory to watch 
+  , logFileName       :: FilePath -- ^ filename of log file
+  , refreshRate       :: RefreshInterval -- ^ refresh rate in seconds 
+  , onCreateScript    :: FilePath -- ^ action to execute on file creation
+  , onRemoveScript    :: FilePath -- ^ action to execute on file modification
+  , onModifyScript    :: FilePath -- ^ action to execute on file deletion
+  , ignore            :: [FilePath] -- ^ list of ignored files
+  } deriving (Typeable, Show, GHC.Generic)
 
-data FileInfo = FileInfo {
-  path         :: FilePath,
-  lastModified :: UTCTime
-} deriving (Show)
+instance FromJSON AppConfig
+instance ToJSON AppConfig where
+  toJSON = genericToJSON defaultOptions
+
+data FileInfo = FileInfo 
+  { path         :: FilePath
+  , lastModified :: UTCTime
+  } deriving (Show)
 
 instance Eq FileInfo where
   x == y = path x == path y
@@ -50,16 +57,16 @@ data FileSystemEvent = Created
                      | Deleted
   deriving (Show, Eq)
 
-data AppState = AppState {
-      filesInfo  :: [FileInfo]
-    , checkPoint :: UTCTime
-    } deriving (Typeable, Show)
+data AppState = AppState 
+  { filesInfo  :: [FileInfo]
+  , checkPoint :: UTCTime
+  } deriving (Typeable, Show)
 
-data LogEntry = LogEntry {
-      file  :: FilePath,
-      event :: FileSystemEvent,
-      time  :: UTCTime
-} deriving (Show)
+data LogEntry = LogEntry 
+  { file  :: FilePath
+  , event :: FileSystemEvent
+  , time  :: UTCTime
+  } deriving (Show)
 
 --------------------------
 ---- Helper Functions ----
@@ -89,18 +96,7 @@ makeLogEntry event (FileInfo file time) = LogEntry file event time
 ---- Parsing Configurations ----
 --------------------------------
 
-instance FromJSON AppConfig where
-    parseJSON (Object m) = AppConfig <$>
-        m .: "directory"      <*>
-        m .: "logFileName"    <*>
-        m .: "refreshRate"    <*>
-        m .: "onCreateScript" <*>
-        m .: "onRemoveScript" <*>
-        m .: "onModifyScript" <*>
-        m .: "ignore"
-    parseJSON x = fail ("not an object: " ++ show x)
-
-readConfig :: FilePath ->  IO AppConfig
+readConfig :: FilePath -> IO AppConfig
 readConfig fname =
     either (error . show) id <$>
     decodeFileEither fname  
@@ -128,7 +124,8 @@ loop = do
 -----------------------------
 ---- Loop Event handlers ----
 -----------------------------
--- |Helper function for script invokation
+
+-- | Helper function for script invokation
 invokeScript :: FilePath -> FileInfo -> IO ()
 invokeScript script fileInfo = do
   callProcess script [path fileInfo]
@@ -169,8 +166,7 @@ handleModify currentFilesInfo = do
   lift $ mapM_ (invokeScript (onModifyScript cfg)) modifiedFilesInfo
   where older x y = lastModified y > lastModified x
 
--- | Handles all effects produced
--- | by application. 
+-- | Handles all effects produced by application. 
 runApp action cfg initState = 
   runLift . runState initState . runReader action $ cfg
 
