@@ -2,7 +2,8 @@
              DeriveDataTypeable,
              DeriveGeneric,
              FlexibleContexts,
-             OverloadedStrings #-}
+             OverloadedStrings,
+             ConstraintKinds #-}
 
 module Main where
 
@@ -105,10 +106,15 @@ readConfig fname =
 ---- Business Logic ----
 ------------------------
 
+-- | Type alias for effects set, demanded by application
+type DemandedEffects r = 
+  ( Member (Reader AppConfig) r
+  , Member (State AppState)   r 
+  , SetMember Lift (Lift IO)  r
+  )
+
 -- | Main loop
-loop :: (Member (Reader AppConfig) r, 
-         Member (State AppState)   r, 
-         SetMember Lift (Lift IO)  r) => Eff r ()
+loop :: DemandedEffects r => Eff r ()
 loop = do
   cfg <- ask
   (AppState  prevFilesList lastTime) <- get  
@@ -130,10 +136,7 @@ invokeScript :: FilePath -> FileInfo -> IO ()
 invokeScript script fileInfo = do
   callProcess script [path fileInfo]
 
-handleCreate :: (Member (Reader AppConfig) r, 
-                 Member (State AppState)   r, 
-                 SetMember Lift (Lift IO)  r) => 
-  [FileInfo] -> Eff r ()
+handleCreate :: DemandedEffects r => [FileInfo] -> Eff r ()
 handleCreate currentFilesInfo = do
   cfg <- ask
   (AppState prevFilesInfo lastTime) <- get
@@ -141,10 +144,7 @@ handleCreate currentFilesInfo = do
           currentFilesInfo \\ prevFilesInfo
   lift $ mapM_ (invokeScript (onCreateScript cfg)) createdFilesInfo 
 
-handleRemove :: (Member (Reader AppConfig) r, 
-                 Member (State AppState)   r, 
-                 SetMember Lift (Lift IO)  r) => 
-  [FileInfo] -> Eff r ()
+handleRemove :: DemandedEffects r => [FileInfo] -> Eff r ()
 handleRemove currentFilesInfo = do
   cfg <- ask
   (AppState prevFilesInfo lastTime) <- get
@@ -152,10 +152,7 @@ handleRemove currentFilesInfo = do
           prevFilesInfo \\ currentFilesInfo 
   lift $ mapM_ (invokeScript (onRemoveScript cfg)) removedFilesInfo
 
-handleModify :: (Member (Reader AppConfig) r, 
-                 Member (State AppState)   r, 
-                 SetMember Lift (Lift IO)  r) => 
-  [FileInfo] -> Eff r ()
+handleModify :: DemandedEffects r => [FileInfo] -> Eff r ()
 handleModify currentFilesInfo = do
   cfg <- ask
   (AppState prevFilesInfo lastTime) <- get
